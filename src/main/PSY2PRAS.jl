@@ -104,13 +104,13 @@ end
 #######################################################
 function line_rating(line::Union{PSY.Line,PSY.MonitoredLine})
     rate = PSY.get_rate(line);
-    return(forward_capacity = rate , backward_capacity = rate)
+    return(forward_capacity = abs(rate) , backward_capacity = abs(rate))
 end
 
 function line_rating(line::PSY.HVDCLine)
     forward_capacity = getfield(PSY.get_active_power_limits_from(line), :max)
     backward_capacity = getfield(PSY.get_active_power_limits_to(line), :max)
-    return(forward_capacity = forward_capacity, backward_capacity = backward_capacity)
+    return(forward_capacity = abs(forward_capacity), backward_capacity = abs(backward_capacity))
 end
 
 #######################################################
@@ -261,7 +261,7 @@ function make_pras_system(sys::PSY.System;
         error("Unrecognized PSY AggregationTopology")
     end
 
-    all_ts = PSY.get_time_series_multiple(sys)
+    all_ts = PSY.get_time_series_multiple(sys);
     first_ts_temp = first(all_ts);
     sys_ts_types = unique(typeof.(PSY.get_time_series_multiple(sys)));
     # Time series information
@@ -299,7 +299,7 @@ function make_pras_system(sys::PSY.System;
     end
 
     N = length(period_of_interest);
-    len_ts_data = get_len_ts_data(first_ts_temp)
+    len_ts_data = get_len_ts_data(first_ts_temp);
 
     if ((N+(period_of_interest.start-1))> len_ts_data)
         error("Cannot make a PRAS System with $(N) timesteps with a PSY System with only $(length(first_ts_temp.data) - (period_of_interest.start-1)) timesteps of time series data")
@@ -385,9 +385,13 @@ function make_pras_system(sys::PSY.System;
     for (idx,region) in enumerate(regions)
         reg_load_comps = availability_flag ? get_available_components_in_aggregation_topology(PSY.PowerLoad, sys, region) :
                                              PSY.get_components_in_aggregation_topology(PSY.PowerLoad, sys, region)
-      
-        region_load[idx,:]=floor.(Int,sum(get_forecast_values.(first.(PSY.get_time_series_multiple.(reg_load_comps, name = "max_active_power")))
+        
+        if (length(reg_load_comps) > 0)
+            region_load[idx,:]=floor.(Int,sum(get_forecast_values.(first.(PSY.get_time_series_multiple.(reg_load_comps, name = "max_active_power")))
                         .*PSY.get_max_active_power.(reg_load_comps))); # Any issues with using the first of time_series_multiple?
+        else
+            region_load[idx,:] = zeros(Int64,N)
+        end
     end
 
     new_regions = PRAS.Regions{N,PRAS.MW}(region_names, region_load);
@@ -531,7 +535,7 @@ function make_pras_system(sys::PSY.System;
         gen_names = PSY.get_name.(gen);
     end
 
-    gen_categories = string.(typeof.(gen));
+    gen_categories = get_generator_category.(gen);
     n_gen = length(gen_names);
 
     gen_cap_array = Matrix{Int64}(undef, n_gen, N);
@@ -678,7 +682,7 @@ function make_pras_system(sys::PSY.System;
         stor_names = PSY.get_name.(stor);
     end
 
-    stor_categories = string.(typeof.(stor));
+    stor_categories = get_generator_category.(stor);
 
     n_stor = length(stor_names);
 
@@ -870,23 +874,15 @@ function make_pras_system(sys::PSY.System;
         #######################################################
         @info "Collecting all inter regional lines in PSY System..."
 
-        # Dictionary with topology mapping
-        line = availability_flag ? 
+        lines = availability_flag ? 
         collect(PSY.get_components(PSY.Branch, sys, (x -> ~in(typeof(x), [PSY.TapTransformer, PSY.Transformer2W,PSY.PhaseShiftingTransformer]) && PSY.get_available(x)))) :
         collect(PSY.get_components(PSY.Branch, sys, x -> ~in(typeof(x), [PSY.TapTransformer, PSY.Transformer2W,PSY.PhaseShiftingTransformer])));
 
-        mapping_dict = PSY.get_aggregation_topology_mapping(aggregation_topology,sys); # Dict with mapping from Areas to Bus_Names
-        new_mapping_dict=Dict{String,Array{Int64,1}}(); 
-
-        for key in keys(mapping_dict)
-            push!(new_mapping_dict, key  => PSY.get_number.(mapping_dict[key]))
-        end
-        
         #######################################################
         # Finding the inter-regional lines and regions_from
         #######################################################
-        regional_lines = filter(x -> (PSY.get_name(PSY.get_area(PSY.get_from_bus(x))) != PSY.get_name(PSY.get_area(PSY.get_to_bus(x)))),line)
-        sorted_lines, interface_reg_idxs, interface_line_idxs = get_sorted_lines(regional_lines, region_names)
+        regional_lines = filter(x -> (PSY.get_name(PSY.get_area(PSY.get_from_bus(x))) != PSY.get_name(PSY.get_area(PSY.get_to_bus(x)))),lines);
+        sorted_lines, interface_reg_idxs, interface_line_idxs = get_sorted_lines(regional_lines, region_names);
         new_lines, new_interfaces = make_pras_interfaces(sorted_lines, interface_reg_idxs, interface_line_idxs,N);
     
         pras_system = PRAS.SystemModel(new_regions, new_interfaces, new_generators, region_gen_idxs, new_storage, region_stor_idxs, new_gen_stors,
